@@ -211,10 +211,6 @@ def get_speaker_service():
         )
     return speaker_service
 
-# Legacy support: keep reference to default transcriber
-# REFACTOR: Avoid eager loading. Tasks should use cache directly.
-transcriber = None
-
 @celery_app.task(
     bind=True,
     name="app.tasks.transcribe_audio_task",
