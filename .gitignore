@@ -1,0 +1,34 @@
+# Environment and Secrets
+venv/
+.env
+
+# OS specific
+.DS_Store
+
+# Python
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Frontend
+node_modules/
+dist/
+build/
+.vscode/
+
+# Backend and Data
+backend/temp/
+transcriber.db
+*.db
+*.sqlite3
+*.log
+backend/*.wav
+backend/*.aiff
+postgres_data/
+
+# Celery artifacts
+celerybeat-schedule
+celerybeat-schedule.db
+
+# Temporary logs
+temp/*.log

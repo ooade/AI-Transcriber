@@ -1,0 +1,168 @@
+services:
+  # ==========================================
+  # DATABASE (PostgreSQL)
+  # ==========================================
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: transcriber
+      POSTGRES_PASSWORD: transcriber_pass
+      POSTGRES_DB: transcriber_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U transcriber -d transcriber_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # CACHE & BROKER (Redis)
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # API SERVER
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - '5173:5173'
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      api:
+        condition: service_started
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - '8000:8000'
+    environment:
+      - DATABASE_URL=postgresql://transcriber:transcriber_pass@db:5432/transcriber_db
+      - MPLCONFIGDIR=/tmp/matplotlib
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_REQUIRED=true
+      - HF_TOKEN=${HF_TOKEN}
+      - WHISPER_CPP_AUTO_SETUP=${WHISPER_CPP_AUTO_SETUP:-true}
+      - WHISPER_CPP_PATH=${WHISPER_CPP_PATH:-}
+      - USE_SQLITE_BROKER=false
+      - CORS_ORIGINS=*
+      # HuggingFace cache directories
+      - HF_HOME=/app/temp/huggingface
+      - TRANSFORMERS_CACHE=/app/temp/huggingface/transformers
+      - HF_HUB_CACHE=/app/temp/huggingface/hub
+      # Pass through other potential env vars
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - ENVIRONMENT=production
+    volumes:
+      - ./backend:/app
+      - temp_data:/app/temp
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+  # ==========================================
+  # WORKER: TRANSCRIPTION (HEAVY)
+  # ==========================================
+  worker-transcription:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    command: celery -A app.celery_app worker --loglevel=info --pool=solo --concurrency=1 --queues=transcription --hostname=transcription@%h
+    environment:
+      - DATABASE_URL=postgresql://transcriber:transcriber_pass@db:5432/transcriber_db
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_REQUIRED=true
+      - USE_SQLITE_BROKER=false
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # HuggingFace cache directories
+      - HF_HOME=/app/temp/huggingface
+      - TRANSFORMERS_CACHE=/app/temp/huggingface/transformers
+      - HF_HUB_CACHE=/app/temp/huggingface/hub
+      - HF_TOKEN=${HF_TOKEN}
+      - WHISPER_CPP_AUTO_SETUP=${WHISPER_CPP_AUTO_SETUP:-true}
+      - WHISPER_CPP_PATH=${WHISPER_CPP_PATH:-}
+    volumes:
+      - ./backend:/app
+      - temp_data:/app/temp
+    depends_on:
+      api:
+        # Wait for API to migrate DB? Or just DB/Redis. API usually handles migrations on startup in main.py?
+        # Actually main.py does `models.Base.metadata.create_all(bind=engine)`.
+        # So we need API to start first or race condition for DB init.
+        # Better: let API init DB.
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+  # ==========================================
+  # WORKER: PROCESSING (FAST) + BEAT
+  # ==========================================
+  worker-processing:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    # Includes --beat to run scheduled tasks (like broadcast_queue_stats)
+    command: celery -A app.celery_app worker --loglevel=info --pool=threads --concurrency=4 --queues=processing,maintenance,celery --hostname=processing@%h --beat
+    environment:
+      - DATABASE_URL=postgresql://transcriber:transcriber_pass@db:5432/transcriber_db
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_REQUIRED=true
+      - USE_SQLITE_BROKER=false
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # HuggingFace cache directories
+      - HF_HOME=/app/temp/huggingface
+      - TRANSFORMERS_CACHE=/app/temp/huggingface/transformers
+      - HF_HUB_CACHE=/app/temp/huggingface/hub
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - ./backend:/app
+      - temp_data:/app/temp
+    depends_on:
+      api:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+volumes:
+  postgres_data:
+  redis_data:
+  temp_data:
